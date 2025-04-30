@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 import heapq
 import copy
 from itertools import permutations
+import imageio
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 np.random.seed(42)
 random.seed(42)
@@ -37,7 +40,6 @@ def compute_score(board):
 
     H, W, D = board_np.shape
     floating_holes = 0
-    # Vectorized hole detection
     for x in range(H):
         empty_cells = board_np[x] == 0
         if np.any(empty_cells):
@@ -45,7 +47,7 @@ def compute_score(board):
                 floating_holes += np.sum((board_np[x] == 0) & (board_np[xx] != 0))
                 break
 
-    return bottom_score + area - height# * 10 - floating_holes * 100 + placement_bonus
+    return bottom_score + area*10 - height * 10 - floating_holes
 
 def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_width=10, sample_size=10, trials=5):
 
@@ -61,31 +63,35 @@ def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_w
 
     def place_block(board, x, y, z, h, w, d, block_id):
         board[x:x+h, y:y+w, z:z+d] = block_id
+
     def find_lowest_grounded_x(board, y, z, h, w, d):
         for x in range(H - h + 1):
             if can_place(board, x, y, z, h, w, d) and is_grounded(board, x, y, z, h, w, d):
                 return x
         return None
+
     best_score = -float('inf')
     best_board = None
+    best_sequence = []
 
     for trial in range(trials):
-        heap = [(0, 0, np.zeros((H, W, D), dtype=int), tuple(blocks))]
+        heap = [(0, 0, np.zeros((H, W, D), dtype=int), tuple(blocks), [])]
         state_counter = 1
 
         while heap:
             new_heap = []
 
-            for _, _, board, remaining in heap:
+            for _, _, board, remaining, sequence in heap:
                 score = compute_score(board)
                 if score > best_score:
                     best_score = score
                     best_board = board.copy()
+                    best_sequence = sequence.copy()
 
                 if not remaining:
                     continue
 
-                idx = 0  # always expand first block in remaining
+                idx = 0
                 block = remaining[idx]
                 dims_list = [block]
                 if allow_rotations:
@@ -101,16 +107,16 @@ def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_w
                         if x is not None:
                             new_board = board.copy()
                             place_block(new_board, x, y, z, h, w, d, len(blocks) - len(remaining) + 1)
+                            new_sequence = sequence + [new_board.copy()]
                             score = compute_score(new_board)
                             new_remaining = remaining[1:]
-                            heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining))
+                            heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining, new_sequence))
                             state_counter += 1
 
             heap = heapq.nsmallest(beam_width, new_heap)
 
-    return best_board
+    return best_board, best_sequence
 
-# Visualization utility for result
 def visualize_board_voxels(board):
     board_np = np.array(board) if not isinstance(board, np.ndarray) else board
     H, W, D = board_np.shape
@@ -123,10 +129,8 @@ def visualize_board_voxels(board):
                 if board_np[x, y, z] != 0:
                     colors[x, y, z] = plt.cm.tab20(board_np[x, y, z] % 20)
 
-    filled_plot = np.transpose(filled, (1, 2, 0))
-    colors_plot = np.transpose(colors, (1, 2, 0))
-    filled_plot = filled_plot[:, :, ::-1]
-    colors_plot = colors_plot[:, :, ::-1]
+    filled_plot = np.transpose(filled, (1, 2, 0))[:, :, ::-1]
+    colors_plot = np.transpose(colors, (1, 2, 0))[:, :, ::-1]
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
@@ -140,25 +144,63 @@ def visualize_board_voxels(board):
     ax.set_xticks(np.arange(0, W + 1, 1.0))
     ax.set_yticks(np.arange(0, D + 1, 1.0))
     ax.set_zticks(np.arange(0, H + 1, 1.0))
-
-    # Set equal scaling for all axes
     max_range = max(W, D, H)
     ax.set_box_aspect([W / max_range, D / max_range, H / max_range])
-
     plt.tight_layout()
     plt.show()
 
+def save_voxel_animation(sequence, W, H, D, filename="animation.gif"):
+    frames = []
+    for board in sequence:
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        board_np = np.array(board)
+        filled = board_np != 0
+        colors = np.empty(board_np.shape, dtype=object)
+
+        for x in range(H):
+            for y in range(W):
+                for z in range(D):
+                    if board_np[x, y, z] != 0:
+                        colors[x, y, z] = plt.cm.tab20(board_np[x, y, z] % 20)
+
+        filled_plot = np.transpose(filled, (1, 2, 0))[:, :, ::-1]
+        colors_plot = np.transpose(colors, (1, 2, 0))[:, :, ::-1]
+
+        ax.voxels(filled_plot, facecolors=colors_plot, edgecolor='k')
+        ax.set_xlim(0, W)
+        ax.set_ylim(0, D)
+        ax.set_zlim(H, 0)
+        ax.axis('off')
+        fig.tight_layout()
+        canvas = FigureCanvas(fig)
+        canvas.draw()
+        fig.canvas.draw()
+        image = np.frombuffer(fig.canvas.get_renderer().tostring_argb(), dtype='uint8')
+        image = image.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+        image = image[:, :, 1:]  # Drop the alpha channel to keep RGB format
+        frames.append(image)
+        plt.close(fig)
+
+    imageio.mimsave(filename, frames, duration=0.5)
 
 if __name__ == "__main__":
     def run_test_case(name, blocks, W, H, D, allow_rotations=True, beam_width=5):
         print(f"\n=== Test Case: {name} ===")
-        board = monte_carlo_beam_search(blocks, W=W, H=H, D=D, allow_rotations=allow_rotations, beam_width=beam_width, sample_size=20, trials=10)
+        board, sequence = monte_carlo_beam_search(blocks, W=W, H=H, D=D, allow_rotations=allow_rotations, beam_width=beam_width, sample_size=25, trials=10)
         if board is not None:
             print(f"Best board found with score: {compute_score(board)}")
             print(f"Bottom fill score: {bottom_fill_score(board)}")
             print(f"Filled volume: {compute_area(board)}/{W*H*D}")
             print(f"Block Volume: {compute_area(board)}/{sum(h * w * d for h, w, d in blocks)}")
             print(f"Maximum height: {current_max_height(board)}/{H}")
+            placed_block_ids = np.unique(board[board != 0])
+            placed_blocks = [blocks[block_id - 1] for block_id in placed_block_ids if block_id > 0]
+            remaining_blocks = [block for block in blocks if block not in placed_blocks]
+            print(f"Remaining blocks: {remaining_blocks}")
+            save_voxel_animation(sequence, W, H, D, filename=f"{name.replace(' ', '_')}.gif")
+            print(f"Animation saved as {name.replace(' ', '_')}.gif")
             visualize_board_voxels(board)
         else:
             print("No valid board to visualize.")
