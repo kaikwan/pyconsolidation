@@ -170,13 +170,13 @@ def visualize_board_voxels(board):
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.voxels(filled_plot, facecolors=colors_plot, edgecolor='k')
-    ax.set_xlabel('Width (Y)')
-    ax.set_ylabel('Depth (Z)')
+    ax.set_xlabel('Depth (Z)')  # Align with tetris_beam_search_mc.py
+    ax.set_ylabel('Width (Y)')  # Align with tetris_beam_search_mc.py
     ax.set_zlabel('Height (X)')
     # max_range = max(H, W, D)
     ax.set_xlim(0, D)
     ax.set_ylim(0, W)
-    ax.set_zlim(H, 0)
+    ax.set_zlim(0, H)  # Align with tetris_beam_search_mc.py
     plt.tight_layout()
     plt.show()
 

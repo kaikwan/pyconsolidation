@@ -49,7 +49,7 @@ def compute_score(board):
 
     return bottom_score + area*10 - height * 10 - floating_holes
 
-def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_width=10, sample_size=10, trials=5):
+def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_width=10, sample_size=10, trials=5, track_sequence=False):
 
     def can_place(board, x, y, z, h, w, d):
         if x + h > H or y + w > W or z + d > D:
@@ -72,21 +72,33 @@ def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_w
 
     best_score = -float('inf')
     best_board = None
-    best_sequence = []
+    best_sequence = [] if track_sequence else None
+
+    if track_sequence:
+        heap = [(0, 0, np.zeros((H, W, D), dtype=int), tuple(blocks), [])]
+    else:
+        heap = [(0, 0, np.zeros((H, W, D), dtype=int), tuple(blocks))]
+
+    state_counter = 1
 
     for trial in range(trials):
-        heap = [(0, 0, np.zeros((H, W, D), dtype=int), tuple(blocks), [])]
-        state_counter = 1
-
-        while heap:
+        local_heap = copy.deepcopy(heap)
+        while local_heap:
             new_heap = []
 
-            for _, _, board, remaining, sequence in heap:
+            for item in local_heap:
+                if track_sequence:
+                    _, _, board, remaining, sequence = item
+                else:
+                    _, _, board, remaining = item
+                    sequence = None
+
                 score = compute_score(board)
                 if score > best_score:
                     best_score = score
                     best_board = board.copy()
-                    best_sequence = sequence.copy()
+                    if track_sequence:
+                        best_sequence = sequence.copy()
 
                 if not remaining:
                     continue
@@ -107,15 +119,20 @@ def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_w
                         if x is not None:
                             new_board = board.copy()
                             place_block(new_board, x, y, z, h, w, d, len(blocks) - len(remaining) + 1)
-                            new_sequence = sequence + [new_board.copy()]
-                            score = compute_score(new_board)
                             new_remaining = remaining[1:]
-                            heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining, new_sequence))
+                            if track_sequence:
+                                new_sequence = sequence + [new_board.copy()]
+                                heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining, new_sequence))
+                            else:
+                                heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining))
                             state_counter += 1
 
-            heap = heapq.nsmallest(beam_width, new_heap)
+            local_heap = heapq.nsmallest(beam_width, new_heap)
 
-    return best_board, best_sequence
+    if track_sequence:
+        return best_board, best_sequence
+    else:
+        return best_board
 
 def visualize_board_voxels(board):
     board_np = np.array(board) if not isinstance(board, np.ndarray) else board
@@ -186,9 +203,22 @@ def save_voxel_animation(sequence, W, H, D, filename="animation.gif"):
     imageio.mimsave(filename, frames, duration=0.5)
 
 if __name__ == "__main__":
-    def run_test_case(name, blocks, W, H, D, allow_rotations=True, beam_width=5):
+    def run_test_case(name, blocks, W, H, D, allow_rotations=True, beam_width=5, save_animation=True):
         print(f"\n=== Test Case: {name} ===")
-        board, sequence = monte_carlo_beam_search(blocks, W=W, H=H, D=D, allow_rotations=allow_rotations, beam_width=beam_width, sample_size=25, trials=10)
+        board_and_seq = monte_carlo_beam_search(
+            blocks, W=W, H=H, D=D,
+            allow_rotations=allow_rotations,
+            beam_width=beam_width,
+            sample_size=25,
+            trials=10,
+            track_sequence=save_animation
+        )
+        if save_animation:
+            board, sequence = board_and_seq
+        else:
+            board = board_and_seq
+            sequence = []
+
         if board is not None:
             print(f"Best board found with score: {compute_score(board)}")
             print(f"Bottom fill score: {bottom_fill_score(board)}")
@@ -199,8 +229,10 @@ if __name__ == "__main__":
             placed_blocks = [blocks[block_id - 1] for block_id in placed_block_ids if block_id > 0]
             remaining_blocks = [block for block in blocks if block not in placed_blocks]
             print(f"Remaining blocks: {remaining_blocks}")
-            save_voxel_animation(sequence, W, H, D, filename=f"{name.replace(' ', '_')}.gif")
-            print(f"Animation saved as {name.replace(' ', '_')}.gif")
+            if save_animation:
+                gif_name = f"{name.replace(' ', '_')}.gif"
+                save_voxel_animation(sequence, W, H, D, filename=gif_name)
+                print(f"Animation saved as {gif_name}")
             visualize_board_voxels(board)
         else:
             print("No valid board to visualize.")
@@ -209,4 +241,4 @@ if __name__ == "__main__":
         return [(random.randint(1, max_dim), random.randint(1, max_dim), random.randint(1, max_dim)) for _ in range(num_blocks)]
 
     random_test_case = generate_random_blocks(num_blocks=20, max_dim=4)
-    run_test_case("Random Test Case", random_test_case, W=10, H=5, D=5)
+    run_test_case("Random Test Case", random_test_case, W=7, H=5, D=5, save_animation=True)
