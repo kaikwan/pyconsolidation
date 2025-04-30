@@ -47,19 +47,18 @@ def compute_score(board):
                 floating_holes += np.sum((board_np[x] == 0) & (board_np[xx] != 0))
                 break
 
-    return bottom_score + area*10 - height * 10 - floating_holes
+    return bottom_score + area * 2 # - height - floating_holes
+
+def is_grounded(board, x, y, z, h, w, d):
+    if x == 0:
+        return True
+    return np.all((board[x, y:y+w, z:z+d] == 0) | (board[x-1, y:y+w, z:z+d] != 0))
 
 def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_width=10, sample_size=10, trials=5, track_sequence=False):
-
     def can_place(board, x, y, z, h, w, d):
         if x + h > H or y + w > W or z + d > D:
             return False
         return np.all(board[x:x+h, y:y+w, z:z+d] == 0)
-
-    def is_grounded(board, x, y, z, h, w, d):
-        if x == 0:
-            return True
-        return np.all((board[x, y:y+w, z:z+d] == 0) | (board[x-1, y:y+w, z:z+d] != 0))
 
     def place_block(board, x, y, z, h, w, d, block_id):
         board[x:x+h, y:y+w, z:z+d] = block_id
@@ -73,12 +72,17 @@ def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_w
     best_score = -float('inf')
     best_board = None
     best_sequence = [] if track_sequence else None
+    best_id_to_index = {}
 
-    if track_sequence:
-        heap = [(0, 0, np.zeros((H, W, D), dtype=int), tuple(blocks), [])]
-    else:
-        heap = [(0, 0, np.zeros((H, W, D), dtype=int), tuple(blocks))]
+    block_id_counter = 1
 
+    initial_heap_item = (
+        0, 0, np.zeros((H, W, D), dtype=int), tuple(enumerate(blocks)), [], {}
+    ) if track_sequence else (
+        0, 0, np.zeros((H, W, D), dtype=int), tuple(enumerate(blocks)), {}
+    )
+
+    heap = [initial_heap_item]
     state_counter = 1
 
     for trial in range(trials):
@@ -88,51 +92,60 @@ def monte_carlo_beam_search(blocks, W=5, H=5, D=5, allow_rotations=False, beam_w
 
             for item in local_heap:
                 if track_sequence:
-                    _, _, board, remaining, sequence = item
+                    _, _, board, remaining, sequence, id_to_index = item
                 else:
-                    _, _, board, remaining = item
+                    _, _, board, remaining, id_to_index = item
                     sequence = None
 
                 score = compute_score(board)
                 if score > best_score:
                     best_score = score
                     best_board = board.copy()
+                    best_id_to_index = id_to_index.copy()
                     if track_sequence:
                         best_sequence = sequence.copy()
 
                 if not remaining:
                     continue
 
-                idx = 0
-                block = remaining[idx]
-                dims_list = [block]
-                if allow_rotations:
-                    dims_list = list(set(permutations(block)))
+                for i, (block_index, block) in enumerate(remaining):
+                    dims_list = [block]
+                    if allow_rotations:
+                        dims_list = list(set(permutations(block)))
 
-                for dims in dims_list:
-                    h, w, d = dims
-                    yzs = [(y, z) for y in range(W - w + 1) for z in range(D - d + 1)]
-                    sampled_yzs = random.sample(yzs, min(sample_size, len(yzs)))
+                    for dims in dims_list:
+                        h, w, d = dims
+                        yzs = [(y, z) for y in range(W - w + 1) for z in range(D - d + 1)]
+                        sampled_yzs = random.sample(yzs, min(sample_size, len(yzs)))
 
-                    for y, z in sampled_yzs:
-                        x = find_lowest_grounded_x(board, y, z, h, w, d)
-                        if x is not None:
-                            new_board = board.copy()
-                            place_block(new_board, x, y, z, h, w, d, len(blocks) - len(remaining) + 1)
-                            new_remaining = remaining[1:]
-                            if track_sequence:
-                                new_sequence = sequence + [new_board.copy()]
-                                heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining, new_sequence))
-                            else:
-                                heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining))
-                            state_counter += 1
+                        for y, z in sampled_yzs:
+                            x = find_lowest_grounded_x(board, y, z, h, w, d)
+                            if x is not None:
+                                new_board = board.copy()
+                                block_id = block_id_counter
+                                block_id_counter += 1
+
+                                place_block(new_board, x, y, z, h, w, d, block_id)
+
+                                # Remove used block
+                                new_remaining = remaining[:i] + remaining[i+1:]
+                                new_id_to_index = id_to_index.copy()
+                                new_id_to_index[block_id] = block_index
+
+                                if track_sequence:
+                                    new_sequence = sequence + [new_board.copy()]
+                                    heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining, new_sequence, new_id_to_index))
+                                else:
+                                    heapq.heappush(new_heap, (-score, state_counter, new_board, new_remaining, new_id_to_index))
+
+                                state_counter += 1
 
             local_heap = heapq.nsmallest(beam_width, new_heap)
 
     if track_sequence:
-        return best_board, best_sequence
+        return best_board, best_sequence, best_id_to_index
     else:
-        return best_board
+        return best_board, best_id_to_index
 
 def visualize_board_voxels(board):
     board_np = np.array(board) if not isinstance(board, np.ndarray) else board
@@ -203,7 +216,7 @@ def save_voxel_animation(sequence, W, H, D, filename="animation.gif"):
     imageio.mimsave(filename, frames, duration=0.5)
 
 if __name__ == "__main__":
-    def run_test_case(name, blocks, W, H, D, allow_rotations=True, beam_width=5, save_animation=True):
+    def run_test_case(name, blocks, W, H, D, allow_rotations=True, beam_width=25, save_animation=True):
         print(f"\n=== Test Case: {name} ===")
         board_and_seq = monte_carlo_beam_search(
             blocks, W=W, H=H, D=D,
@@ -214,10 +227,9 @@ if __name__ == "__main__":
             track_sequence=save_animation
         )
         if save_animation:
-            board, sequence = board_and_seq
+            board, sequence, id_to_index = board_and_seq
         else:
-            board = board_and_seq
-            sequence = []
+            board, id_to_index = board_and_seq
 
         if board is not None:
             print(f"Best board found with score: {compute_score(board)}")
@@ -225,10 +237,14 @@ if __name__ == "__main__":
             print(f"Filled volume: {compute_area(board)}/{W*H*D}")
             print(f"Block Volume: {compute_area(board)}/{sum(h * w * d for h, w, d in blocks)}")
             print(f"Maximum height: {current_max_height(board)}/{H}")
-            placed_block_ids = np.unique(board[board != 0])
-            placed_blocks = [blocks[block_id - 1] for block_id in placed_block_ids if block_id > 0]
-            remaining_blocks = [block for block in blocks if block not in placed_blocks]
+            placed_ids = sorted(set(int(i) for i in np.unique(board) if i > 0))
+            placed_blocks = [blocks[id_to_index[i]] for i in placed_ids]
+            remaining_blocks = [blocks[i] for i in range(len(blocks)) if i not in id_to_index.values()]
+
+            print(f"Placed blocks: {placed_blocks}")
             print(f"Remaining blocks: {remaining_blocks}")
+            print(f"Number of blocks placed: {len(placed_blocks)}")
+            print(f"Number of blocks remaining: {len(remaining_blocks)}")
             if save_animation:
                 gif_name = f"{name.replace(' ', '_')}.gif"
                 save_voxel_animation(sequence, W, H, D, filename=gif_name)
@@ -240,5 +256,5 @@ if __name__ == "__main__":
     def generate_random_blocks(num_blocks, max_dim):
         return [(random.randint(1, max_dim), random.randint(1, max_dim), random.randint(1, max_dim)) for _ in range(num_blocks)]
 
-    random_test_case = generate_random_blocks(num_blocks=20, max_dim=4)
-    run_test_case("Random Test Case", random_test_case, W=7, H=5, D=5, save_animation=True)
+    random_test_case = generate_random_blocks(num_blocks=20, max_dim=8)
+    run_test_case("Random Test Case", random_test_case, W=10, H=5, D=8, save_animation=True)
